@@ -1,0 +1,20 @@
+# إعدادات وبيانات شخصية
+vision_config.json
+vision_memory.json
+
+# السجلات والصور
+vision_logs/
+vision_debug/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+*.spec
+
+# بيئات
+.env
+venv/
+.venv/

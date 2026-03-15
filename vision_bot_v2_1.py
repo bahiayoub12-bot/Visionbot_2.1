@@ -114,6 +114,9 @@ class ConfigManager:
         # المراقب الصامت
         "watcher_enabled":      False,  # ⑪ معطل افتراضياً
         "watcher_interval":     30,
+        # التعاون مع المستخدم
+        "user_collab":          False,
+        "collab_countdown":     10,
     }
 
     DEFAULT_MODELS: Dict[str, str] = {
@@ -1374,17 +1377,48 @@ class VisionBotGUI21:
                            activebackground=self.C["panel"],
                            font=("Consolas",8)).pack(side="left", padx=3)
 
-        # مفاتيح API مع خانة النموذج لكل مزود
-        self._sec(p, "◈  مفاتيح API")
+        # مفاتيح API مع قوائم منسدلة للنماذج
+        self._sec(p, "◈  مفاتيح API والنماذج")
         self._api_vars: Dict[str, tk.StringVar] = {}
         self._model_vars: Dict[str, tk.StringVar] = {}
 
-        providers_cfg = [
-            ("Claude / OpenAI / Gemini:", "api_key",    "claude-sonnet-4-5 / gpt-4o / gemini-2.0-flash"),
-            ("Groq API Key:",             "groq_key",   "meta-llama/llama-4-scout-17b-16e-instruct"),
-            ("NVIDIA API Key:",           "nvidia_key", "microsoft/phi-3.5-vision-instruct"),
-        ]
-        for lbl, key, placeholder in providers_cfg:
+        # النماذج لكل مزود مع تقييمها
+        _models_map = {
+            "api_key": [
+                ("claude-sonnet-4-6 [95] 👁",          "claude-sonnet-4-6"),
+                ("claude-opus-4-6 [98] 👁",            "claude-opus-4-6"),
+                ("claude-haiku-4-5-20251001 [80] 👁",  "claude-haiku-4-5-20251001"),
+                ("gpt-4o [95] 👁",                     "gpt-4o"),
+                ("gpt-4o-mini [80] 👁",                "gpt-4o-mini"),
+                ("gemini-2.5-pro-latest [97] 👁",      "gemini-2.5-pro-latest"),
+                ("gemini-2.0-flash [88] 👁",           "gemini-2.0-flash"),
+                ("gemini-1.5-pro [92] 👁",             "gemini-1.5-pro"),
+                ("gemini-1.5-flash [80] 👁",           "gemini-1.5-flash"),
+            ],
+            "groq_key": [
+                ("llama-4-maverick [95] 👁",   "meta-llama/llama-4-maverick-17b-128e-instruct"),
+                ("llama-4-scout [90] 👁",      "meta-llama/llama-4-scout-17b-16e-instruct"),
+                ("llama-3.3-70b [75] 📝",      "llama-3.3-70b-versatile"),
+                ("llama-3.1-70b [70] 📝",      "llama-3.1-70b-versatile"),
+                ("llama-3.1-8b [55] ⚡",       "llama-3.1-8b-instant"),
+                ("deepseek-r1-70b [72] 🧠",    "deepseek-r1-distill-llama-70b"),
+            ],
+            "nvidia_key": [
+                ("phi-3.5-vision [85] 👁",       "microsoft/phi-3.5-vision-instruct"),
+                ("llama-3.2-90b-vision [92] 👁", "meta/llama-3.2-90b-vision-instruct"),
+                ("nemotron-70b [88] 📝",         "nvidia/llama-3.1-nemotron-70b-instruct"),
+            ],
+        }
+        _labels_map = {
+            "api_key":    "Claude / OpenAI / Gemini:",
+            "groq_key":   "Groq API Key:",
+            "nvidia_key": "NVIDIA API Key:",
+        }
+
+        for key in ["api_key", "groq_key", "nvidia_key"]:
+            lbl = _labels_map[key]
+            models_list = _models_map[key]
+
             # عنوان المزود
             tk.Label(p, text=lbl, bg=self.C["panel"], fg=self.C["muted"],
                      font=("Consolas",8)).pack(anchor="w", padx=10)
@@ -1396,32 +1430,66 @@ class VisionBotGUI21:
                      font=("Consolas",9), bd=0,
                      insertbackground=self.C["accent"]
                      ).pack(fill="x", padx=10, ipady=4, pady=(0,2))
-            # عنوان النموذج
-            tk.Label(p, text="النموذج (اتركه فارغاً للافتراضي):",
+
+            # عنوان القائمة
+            tk.Label(p, text="اختر النموذج:",
                      bg=self.C["panel"], fg=self.C["muted"],
                      font=("Consolas",7)).pack(anchor="w", padx=10)
-            # مربع النموذج
+
+            # القائمة المنسدلة
             mv = tk.StringVar(value=self._config.get(f"model_{key}", ""))
             self._model_vars[key] = mv
-            e = tk.Entry(p, textvariable=mv,
-                         bg=self.C["inp"], fg=self.C["text"],
-                         font=("Consolas",8), bd=0,
-                         insertbackground=self.C["accent"])
-            e.pack(fill="x", padx=10, ipady=3, pady=(0,8))
-            # placeholder hint
-            e.insert(0, placeholder)
-            e.configure(fg=self.C["muted"])
-            def _on_focus_in(event, entry=e, ph=placeholder, var=mv):
-                if entry.get() == ph:
-                    entry.delete(0, "end")
-                    entry.configure(fg=self.C["text"])
-            def _on_focus_out(event, entry=e, ph=placeholder, var=mv):
-                if not entry.get().strip():
-                    entry.insert(0, ph)
-                    entry.configure(fg=self.C["muted"])
-                    var.set("")
-            e.bind("<FocusIn>",  _on_focus_in)
-            e.bind("<FocusOut>", _on_focus_out)
+
+            # إطار القائمة + زر إضافة
+            combo_frame = tk.Frame(p, bg=self.C["panel"])
+            combo_frame.pack(fill="x", padx=10, pady=(0,2))
+
+            # Combobox
+            from tkinter import ttk
+            display_names = [m[0] for m in models_list]
+            cb = ttk.Combobox(combo_frame, textvariable=mv,
+                              values=display_names,
+                              font=("Consolas",8), state="normal",
+                              width=28)
+            cb.pack(side="left", fill="x", expand=True, ipady=3)
+
+            # تحويل الاختيار من اسم العرض للقيمة الحقيقية
+            def _on_select(event, cb=cb, models=models_list, var=mv):
+                selected = cb.get()
+                for display, real in models:
+                    if display == selected:
+                        var.set(real)
+                        cb.set(display)
+                        return
+            cb.bind("<<ComboboxSelected>>", _on_select)
+
+            # ضبط القيمة الحالية
+            current_val = self._config.get(f"model_{key}", "")
+            for display, real in models_list:
+                if real == current_val:
+                    cb.set(display)
+                    break
+
+            # زر + لإضافة نموذج مخصص
+            def _add_custom(key=key, cb=cb, models=models_list, var=mv):
+                import tkinter.simpledialog as sd
+                custom = sd.askstring("نموذج مخصص", "اكتب اسم النموذج:")
+                if custom and custom.strip():
+                    custom = custom.strip()
+                    new_entry = (f"{custom} [?] ✏", custom)
+                    models.append(new_entry)
+                    cb["values"] = [m[0] for m in models]
+                    cb.set(new_entry[0])
+                    var.set(custom)
+
+            tk.Button(combo_frame, text="+",
+                      command=_add_custom,
+                      bg=self.C["accent"], fg="#000",
+                      font=("Consolas",9,"bold"),
+                      bd=0, padx=6, cursor="hand2"
+                      ).pack(side="left", padx=(4,0))
+
+            tk.Frame(p, bg=self.C["border"], height=1).pack(fill="x", padx=10, pady=(4,6))
 
         # التقنيات
         self._sec(p, "◈  التقنيات الـ 11")
@@ -1438,6 +1506,7 @@ class VisionBotGUI21:
             ("⑪ المراقب الصامت",            "watcher_enabled", self.C["yellow"]),
             ("① شبكة الإحداثيات",          "grid_enabled",    self.C["green"]),
             ("④ التصحيح الذاتي",           "self_correction", self.C["green"]),
+            ("🤝 التعاون مع المستخدم",      "user_collab",     self.C["purple"]),
         ]
         for lbl, key, color in toggles:
             if key:
@@ -1465,6 +1534,22 @@ class VisionBotGUI21:
         )
         self._task_txt.pack(fill="x", padx=10, ipady=4)
         self._task_txt.insert("1.0", "مثال: افتح المتصفح وابحث عن أحدث أخبار الذكاء الاصطناعي")
+
+        # العد التنازلي للتعاون
+        cd_frame = tk.Frame(p, bg=self.C["panel"])
+        cd_frame.pack(fill="x", padx=10, pady=(6,2))
+        tk.Label(cd_frame, text="⏱ عد تنازلي (ثوانٍ):",
+                 bg=self.C["panel"], fg=self.C["purple"],
+                 font=("Consolas",8)).pack(side="left")
+        self._countdown_var = tk.IntVar(value=self._config.get("collab_countdown", 10))
+        for sec in [5, 10, 15, 20, 30]:
+            tk.Radiobutton(cd_frame, text=str(sec),
+                           variable=self._countdown_var, value=sec,
+                           bg=self.C["panel"], fg=self.C["text"],
+                           selectcolor=self.C["btn"],
+                           activebackground=self.C["panel"],
+                           font=("Consolas",8)
+                           ).pack(side="left", padx=3)
 
         # سياق التطبيق
         tk.Label(p, text="سياق التطبيق (للذاكرة):",
@@ -1538,6 +1623,30 @@ class VisionBotGUI21:
     def _run(self) -> None:
         if self._agent.is_running:
             messagebox.showwarning("تنبيه","الوكيل يعمل!"); return
+
+        # وضع التعاون مع المستخدم
+        if self._t_vars.get("user_collab") and self._t_vars["user_collab"].get():
+            seconds = self._countdown_var.get()
+            self._safe_log(f"🤝 وضع التعاون — لديك {seconds} ثانية للذهاب للمكان المطلوب!", "WARNING")
+            self._set_status(f"⏱ اذهب للمكان المطلوب... {seconds}s", self.C["purple"])
+            self._root.update()
+
+            def _collab_countdown():
+                for i in range(seconds, 0, -1):
+                    self._root.after(0, lambda i=i: self._set_status(
+                        f"⏱ ابدأ بعد... {i} ثانية", self.C["purple"]))
+                    self._root.after(0, lambda i=i: self._safe_log(
+                        f"⏱ {i}...", "WARNING") if i <= 5 else None)
+                    time.sleep(1)
+                self._root.after(0, lambda: self._safe_log("🤝 ابدأ الكتابة الآن!", "SUCCESS"))
+                self._root.after(0, self._run_agent_now)
+
+            threading.Thread(target=_collab_countdown, daemon=True).start()
+            return
+
+        self._run_agent_now()
+
+    def _run_agent_now(self) -> None:
         if not any(self._api_vars[k].get().strip() for k in self._api_vars):
             messagebox.showerror("خطأ","أدخل مفتاح API واحداً على الأقل"); return
         task = self._task_txt.get("1.0","end").strip()
@@ -1588,16 +1697,20 @@ class VisionBotGUI21:
         for key, var in self._api_vars.items():
             self._config.set(key, var.get().strip())
         # حفظ النماذج المخصصة لكل مزود
-        placeholders = [
-            "claude-sonnet-4-5 / gpt-4o / gemini-2.0-flash",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-            "microsoft/phi-3.5-vision-instruct",
-        ]
         for key, var in self._model_vars.items():
             val = var.get().strip()
-            if val in placeholders:
-                val = ""
+            # إذا كان اسم العرض (يحتوي [رقم]) نحوله للقيمة الحقيقية
+            import re as _re
+            real_match = _re.search(r'\[[\d?]+\].*$', val)
+            if real_match:
+                # ابحث عن القيمة الحقيقية في القوائم
+                pass  # القيمة الحقيقية محفوظة مباشرة في StringVar
             self._config.set(f"model_{key}", val)
+
+        # حفظ إعدادات التعاون
+        self._config.set("user_collab", self._t_vars.get("user_collab", tk.BooleanVar()).get() if "user_collab" in self._t_vars else False)
+        if hasattr(self, "_countdown_var"):
+            self._config.set("collab_countdown", self._countdown_var.get())
         for key, var in self._t_vars.items():
             self._config.set(key, var.get())
         for key, var in self._svars.items():

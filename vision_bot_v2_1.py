@@ -1249,7 +1249,6 @@ class VisionBotGUI21:
 
     def __init__(self) -> None:
         self._config     = ConfigManager()
-        self._agent      = VisionAgentV21(self._config, self._safe_log)
         self._stop_event = threading.Event()
 
         self._root = tk.Tk()
@@ -1260,6 +1259,7 @@ class VisionBotGUI21:
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._build_ui()
+        self._agent = VisionAgentV21(self._config, self._safe_log)
 
     # ── بناء الواجهة ─────────────────────────────────────────────────
 
@@ -1565,7 +1565,8 @@ class VisionBotGUI21:
             self._log_txt.insert("end", f"[{ts}]  {msg}\n", tag)
             self._log_txt.see("end")
             self._log_txt.configure(state="disabled")
-        self._root.after(0, _do)
+        if hasattr(self, "_root") and hasattr(self, "_log_txt"):
+            self._root.after(0, _do)
 
     def _clear_log(self) -> None:
         self._log_txt.configure(state="normal")

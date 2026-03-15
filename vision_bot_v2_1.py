@@ -1701,21 +1701,21 @@ class VisionBotGUI21:
 
                 try:
                     import pyperclip
-                    pyperclip.copy(generated_text)
                     import pyautogui
-                    time.sleep(0.3)
-                    pyautogui.hotkey("ctrl", "v")
-                    self._root.after(0, lambda: self._safe_log("✅ تم اللصق بنجاح!", "SUCCESS"))
-                except Exception:
-                    try:
-                        import pyautogui
-                        import pyperclip
-                        pyperclip.copy(generated_text)
-                        pyautogui.hotkey("ctrl", "v")
-                    except Exception as ex2:
-                        self._root.after(0, lambda: self._safe_log(f"❌ خطأ في الكتابة: {ex2}", "ERROR"))
 
-                self._root.after(0, lambda: self._set_status("✅ مكتمل — التعاون انتهى", self.C["green"]))
+                    # ضع النص في الحافظة
+                    pyperclip.copy(generated_text)
+                    time.sleep(0.1)
+
+                    # الصق مباشرة — التركيز عند المستخدم وليس عند البرنامج
+                    pyautogui.hotkey("ctrl", "v")
+
+                    self._root.after(0, lambda: self._safe_log(f"✅ تم: {generated_text[:80]}", "SUCCESS"))
+
+                except Exception as ex:
+                    self._root.after(0, lambda: self._safe_log(f"❌ خطأ: {ex}", "ERROR"))
+
+                self._root.after(0, lambda: self._set_status("✅ مكتمل", self.C["green"]))
 
             threading.Thread(target=_collab_worker, daemon=True).start()
             return

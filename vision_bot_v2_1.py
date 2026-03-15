@@ -1637,6 +1637,13 @@ class VisionAgentV21:
                 if success and elem and self._config.get("memory_enabled"):
                     self._memory.record_success(app_ctx, elem, x, y)
 
+                if success:
+                    # انتظار ذكي بعد النقر
+                    SmartWaiter.wait_for_change(
+                        self._capture_raw,
+                        timeout=5.0,
+                        threshold=0.02
+                    )
                 return success
 
             elif act == "TYPE":
@@ -1682,7 +1689,15 @@ class VisionAgentV21:
                 url = action.get("text", "")
                 if url:
                     ok = self._win_accessibility.open_url_in_browser(url)
-                    self._log(f"🌐 فتح: {url} — {'✅' if ok else '❌'}", "SUCCESS" if ok else "ERROR")
+                    self._log(f"🌐 فتح: {url} — انتظار تحميل...", "INFO")
+                    # انتظار ذكي حتى يتحمل الموقع
+                    SmartWaiter.wait_for_change(
+                        self._capture_raw,
+                        timeout=10.0,
+                        threshold=0.05
+                    )
+                    time.sleep(1.5)
+                    self._log(f"✅ الصفحة جاهزة", "SUCCESS")
                     return ok
                 return False
 
@@ -1691,8 +1706,15 @@ class VisionAgentV21:
                 if app_path:
                     import subprocess
                     subprocess.Popen(app_path, shell=True)
-                    self._log(f"🚀 فتح التطبيق: {app_path}", "SUCCESS")
-                    time.sleep(1.5)
+                    self._log(f"🚀 فتح التطبيق: {app_path} — انتظار تحميل...", "INFO")
+                    # انتظار ذكي حتى تتغير الشاشة فعلاً
+                    SmartWaiter.wait_for_change(
+                        self._capture_raw,
+                        timeout=8.0,
+                        threshold=0.05
+                    )
+                    time.sleep(1.0)  # انتظار إضافي للتحميل الكامل
+                    self._log(f"✅ التطبيق جاهز", "SUCCESS")
                     return True
                 return False
 
@@ -1745,15 +1767,6 @@ class VisionAgentV21:
         if self._root_ref:
             self._root_ref.after(0, self._root_ref.iconify)
             time.sleep(2.5)  # انتظر حتى تختفي النافذة كاملاً
-
-        # ══ كشف المهام البسيطة وتنفيذها مباشرة بدون AI ══
-        direct_result = self._try_direct_action(task)
-        if direct_result:
-            self._log(f"⚡ تم مباشرة: {direct_result}", "SUCCESS")
-            if done_cb:
-                done_cb(True, direct_result)
-            self.is_running = False
-            return
 
         # ⑩ تصنيف التعقيد
         tier    = ModelSelector.classify(task)
@@ -2276,18 +2289,30 @@ class VisionBotGUI21:
         self._task_txt = tk.Text(
             task_frame, height=4, wrap="word",
             bg=self.C["inp"], fg=self.C["text"],
-            font=("Arial",10), bd=0,
+            font=("Arial Unicode MS", 11), bd=0,
             insertbackground=self.C["accent"],
-            # RTL للعربية
         )
         self._task_txt.pack(side="left", fill="x", expand=True, ipady=4)
-        self._task_txt.insert("1.0", "مثال: افتح المتصفح وابحث عن أحدث أخبار الذكاء الاصطناعي")
-        # ضبط اتجاه RTL
+
+        # ضبط RTL للعربية بشكل صحيح
         self._task_txt.tag_configure("rtl", justify="right")
+        self._task_txt.insert("1.0", "مثال: افتح المتصفح وابحث عن أحدث أخبار الذكاء الاصطناعي")
         self._task_txt.tag_add("rtl", "1.0", "end")
-        self._task_txt.bind("<KeyRelease>", lambda e: (
+
+        def _on_key(event):
+            # طبّق RTL على كل النص دائماً
             self._task_txt.tag_add("rtl", "1.0", "end")
-        ))
+            # إذا كان النص عربياً ابدأ الكتابة من اليمين
+            content_text = self._task_txt.get("1.0", "end-1c")
+            has_arabic = any("؀" <= c <= "ۿ" for c in content_text)
+            if has_arabic:
+                self._task_txt.tag_configure("rtl", justify="right")
+            else:
+                self._task_txt.tag_configure("rtl", justify="left")
+            self._task_txt.tag_add("rtl", "1.0", "end")
+
+        self._task_txt.bind("<KeyRelease>", _on_key)
+        self._task_txt.bind("<FocusIn>", lambda e: self._task_txt.tag_add("rtl", "1.0", "end"))
 
         # زر الميكروفون
         self._mic_btn = tk.Button(

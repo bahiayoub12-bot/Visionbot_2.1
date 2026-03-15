@@ -36,18 +36,220 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import concurrent.futures
 import io
 import json
 import logging
+import queue
 import re
+import subprocess
 import threading
 import time
 import tkinter as tk
+import traceback
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, scrolledtext
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SmartWaiter — انتظار ذكي بدون time.sleep()
+# ══════════════════════════════════════════════════════════════════════════════
+
+class SmartWaiter:
+    """
+    انتظار ذكي يراقب الشاشة بدلاً من time.sleep().
+    
+    بدلاً من: time.sleep(2)
+    استخدم:   SmartWaiter.wait_for_change(capture_fn, timeout=5)
+    
+    يرصد التغيير الفعلي في الشاشة ويكمل فوراً عند حدوثه.
+    """
+
+    @staticmethod
+    def wait_for_change(
+        capture_fn:   Callable[[], Optional[bytes]],
+        timeout:      float = 10.0,
+        poll_interval: float = 0.2,
+        threshold:    float = 0.02,
+    ) -> bool:
+        """
+        ينتظر حتى تتغير الشاشة أو ينتهي الـ timeout.
+        
+        Returns:
+            True إذا تغيرت الشاشة، False إذا انتهى الـ timeout.
+        """
+        start     = time.time()
+        prev_frame = capture_fn()
+
+        while time.time() - start < timeout:
+            time.sleep(poll_interval)
+            curr_frame = capture_fn()
+            if curr_frame and prev_frame:
+                try:
+                    from PIL import Image
+                    import io as _io
+                    img1 = Image.open(_io.BytesIO(prev_frame)).convert("L")
+                    img2 = Image.open(_io.BytesIO(curr_frame)).convert("L")
+                    if img1.size == img2.size:
+                        import struct
+                        diff = sum(
+                            abs(a - b)
+                            for a, b in zip(img1.tobytes(), img2.tobytes())
+                        ) / (img1.width * img1.height * 255)
+                        if diff > threshold:
+                            return True
+                except Exception:
+                    return True
+            prev_frame = curr_frame
+
+        return False
+
+    @staticmethod
+    def wait_for_element(
+        check_fn:     Callable[[], bool],
+        timeout:      float = 10.0,
+        poll_interval: float = 0.3,
+    ) -> bool:
+        """
+        ينتظر حتى يظهر عنصر معين (مثل نافذة أو زر).
+        
+        Args:
+            check_fn: دالة تُعيد True إذا ظهر العنصر.
+            timeout:  وقت الانتظار الأقصى بالثوانٍ.
+        
+        Returns:
+            True إذا ظهر العنصر، False إذا انتهى الـ timeout.
+        """
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                if check_fn():
+                    return True
+            except Exception:
+                pass
+            time.sleep(poll_interval)
+        return False
+
+    @staticmethod
+    def wait_for_window(
+        title_contains: str,
+        timeout: float = 10.0,
+    ) -> bool:
+        """ينتظر حتى تظهر نافذة بعنوان معين."""
+        def _check():
+            try:
+                import win32gui
+                found = []
+                def _cb(hwnd, _):
+                    if win32gui.IsWindowVisible(hwnd):
+                        t = win32gui.GetWindowText(hwnd)
+                        if title_contains.lower() in t.lower():
+                            found.append(hwnd)
+                win32gui.EnumWindows(_cb, None)
+                return len(found) > 0
+            except Exception:
+                return False
+        return SmartWaiter.wait_for_element(_check, timeout)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AsyncBrain — فصل التحليل عن التنفيذ
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AsyncBrain:
+    """
+    يفصل منطق التحليل (Brain) عن منطق التنفيذ (Executor).
+    
+    Brain:    يرسل الشاشة للـ LLM ويحلل القرار (في Thread منفصل)
+    Executor: ينفذ الأوامر على الشاشة (في الـ Thread الرئيسي)
+    
+    هذا يمنع تجميد الواجهة أثناء انتظار الـ LLM.
+    """
+
+    def __init__(self, log_cb: Optional[Callable] = None) -> None:
+        self._log       = log_cb or (lambda m, l: None)
+        self._executor  = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        self._result_q: queue.Queue = queue.Queue()
+
+    def analyze_async(
+        self,
+        llm:          Any,
+        screenshot:   str,
+        task:         str,
+        history:      List[str],
+        grid_desc:    str,
+        screen_size:  Tuple[int, int],
+    ) -> concurrent.futures.Future:
+        """يرسل الشاشة للتحليل بشكل غير متزامن."""
+        return self._executor.submit(
+            llm.analyze,
+            screenshot, task, history, grid_desc, screen_size
+        )
+
+    def shutdown(self) -> None:
+        self._executor.shutdown(wait=False)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GlobalExceptionHandler — معالج الأخطاء العالمي
+# ══════════════════════════════════════════════════════════════════════════════
+
+class GlobalExceptionHandler:
+    """
+    يعالج الأخطاء غير المتوقعة بذكاء:
+    1. يأخذ لقطة شاشة للتشخيص
+    2. يحاول إغلاق التطبيق المستهدف
+    3. يعيد التشغيل من نقطة الصفر
+    """
+
+    def __init__(
+        self,
+        capture_fn: Callable,
+        log_cb:     Optional[Callable] = None,
+    ) -> None:
+        self._capture = capture_fn
+        self._log     = log_cb or (lambda m, l: None)
+        self._error_dir = Path("vision_errors")
+        self._error_dir.mkdir(exist_ok=True)
+
+    def handle(self, error: Exception, context: str = "") -> None:
+        """يعالج الخطأ ويحاول التعافي."""
+        error_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._log(f"🚨 خطأ غير متوقع [{error_id}]: {error}", "ERROR")
+        self._log(f"📍 السياق: {context}", "ERROR")
+
+        # 1. لقطة شاشة للتشخيص
+        try:
+            frame = self._capture()
+            if frame:
+                import base64 as b64
+                path = self._error_dir / f"error_{error_id}.jpg"
+                with open(path, "wb") as f:
+                    f.write(frame)
+                self._log(f"📸 لقطة محفوظة: {path}", "INFO")
+        except Exception:
+            pass
+
+        # 2. تسجيل Traceback
+        tb_path = self._error_dir / f"traceback_{error_id}.txt"
+        with open(tb_path, "w", encoding="utf-8") as f:
+            f.write(traceback.format_exc())
+
+        # 3. إعادة ضبط الحالة
+        try:
+            import pyautogui
+            pyautogui.press("escape")
+            time.sleep(0.3)
+            pyautogui.hotkey("alt", "F4")
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+        self._log("🔄 تم التعافي — جاهز للمهمة التالية", "WARNING")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Windows Accessibility Engine — pywin32 + pywinauto
@@ -1276,8 +1478,25 @@ class VisionAgentV21:
             "opera": "start opera",
         }
 
+        import re, urllib.parse
+
+        # كشف البحث في جوجل
+        search_words = ["ابحث", "search", "اعثر", "find", "أخبار", "news", "معلومات"]
+        is_search = any(w in t for w in search_words)
+
+        if is_search and not any(s in t for s in sites.keys()):
+            # استخرج موضوع البحث
+            query = task
+            for w in ["ابحث عن", "ابحث في", "search for", "اعثر على", "أخبار"]:
+                if w in t:
+                    query = task[task.lower().find(w) + len(w):].strip()
+                    break
+            encoded = urllib.parse.quote(query)
+            webbrowser.open(f"https://www.google.com/search?q={encoded}")
+            return f"بحث عن: {query[:50]} ✅"
+
         # كشف إذا كان الطلب فتح موقع
-        open_words = ["افتح", "اذهب", "open", "go to", "browse", "ابحث في", "شغل"]
+        open_words = ["افتح", "اذهب", "open", "go to", "browse", "شغل"]
         is_open = any(w in t for w in open_words)
 
         if is_open or "موقع" in t or "site" in t or "http" in t:
@@ -1288,8 +1507,7 @@ class VisionAgentV21:
                     return f"فتح {name} ✅"
 
             # إذا كان رابطاً مباشراً
-            import re
-            url_match = re.search(r'https?://\S+', task)
+            url_match = re.search(r'https?://[^\s]+', task)
             if url_match:
                 webbrowser.open(url_match.group())
                 return f"فتح الرابط ✅"
@@ -1318,6 +1536,12 @@ class VisionAgentV21:
             self._log("✅ Pillow", "INFO")
         except ImportError:
             self._log("❌ pip install pillow", "ERROR")
+
+        # تهيئة معالج الأخطاء العالمي بعد تجهيز PIL
+        self._exc_handler = GlobalExceptionHandler(
+            capture_fn=self._capture_raw,
+            log_cb=self._log,
+        )
 
     # ── التقاط الشاشة ────────────────────────────────────────────────
 
@@ -1560,10 +1784,22 @@ class VisionAgentV21:
 
             grid_desc = self._gridder.description(sw, sh)
 
-            # إرسال للـ LLM
-            self._log("🧠 تحليل…", "INFO")
-            action = llm.analyze(b64, task, self._history, grid_desc, (sw, sh))
-            self._log(f"📋 ACTION: {action.get('action')} | {action.get('reason','')}", "INFO")
+            # إرسال للـ LLM عبر AsyncBrain (non-blocking)
+            self._log("🧠 تحليل الشاشة...", "INFO")
+            try:
+                future = self._brain.analyze_async(
+                    llm, b64, task, self._history, grid_desc, (sw, sh)
+                )
+                # انتظر النتيجة مع timeout
+                action = future.result(timeout=30)
+            except concurrent.futures.TimeoutError:
+                self._log("⏱ انتهى وقت التحليل — إعادة المحاولة", "WARNING")
+                continue
+            except Exception as e:
+                if self._exc_handler:
+                    self._exc_handler.handle(e, f"LLM analysis step {step}")
+                continue
+            self._log(f"📋 ACTION: {action.get('action')} | {action.get('reason','')[:60]}", "INFO")
 
             act = action.get("action", "FAIL").upper()
 
@@ -1613,7 +1849,14 @@ class VisionAgentV21:
                         self._log(f"✅ التوقع تحقق: {expected}", "SUCCESS")
                         consecutive_failures = 0
             else:
-                time.sleep(step_delay)
+                # SmartWaiter: انتظر تغيير الشاشة بدلاً من time.sleep ثابت
+                changed = SmartWaiter.wait_for_change(
+                    self._capture_raw,
+                    timeout=step_delay * 3,
+                    threshold=0.015
+                )
+                if not changed:
+                    self._log(f"⚠️ الشاشة لم تتغير بعد {step_delay*3:.1f}s", "WARNING")
 
             # إذا فشلت 3 خطوات متتالية → إعادة التخطيط الكاملة
             if consecutive_failures >= 3:
@@ -1638,6 +1881,21 @@ class VisionAgentV21:
         if done_cb:
             done_cb(False, msg)
         self.is_running = False
+
+    def _safe_run_task(self, task, stop_event, done_cb, app_ctx):
+        """
+        wrapper آمن لـ run_task مع Global Exception Handler.
+        أي خطأ غير متوقع يُعالج ولا يوقف البرنامج.
+        """
+        try:
+            self.run_task(task, stop_event, done_cb, app_ctx)
+        except Exception as e:
+            if self._exc_handler:
+                self._exc_handler.handle(e, f"run_task: {task[:50]}")
+            self._log(f"🚨 خطأ كارثي تم التعافي منه: {e}", "ERROR")
+            self.is_running = False
+            if done_cb:
+                done_cb(False, f"خطأ تم التعافي منه: {e}")
 
     # ── المراقب الصامت ────────────────────────────────────────────────
 
@@ -2250,7 +2508,7 @@ class VisionBotGUI21:
         self._stop_event.clear()
         self._set_status("⬤  الوكيل يعمل…", self.C["yellow"])
         threading.Thread(
-            target=self._agent.run_task,
+            target=self._agent._safe_run_task,
             args=(task, self._stop_event, self._on_done, self._ctx_var.get()),
             daemon=True,
         ).start()

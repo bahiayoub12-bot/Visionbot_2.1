@@ -1270,7 +1270,7 @@ class VisionBotGUI21:
 
         self._root = tk.Tk()
         self._root.title(f"🤖 VisionBot v{VERSION} — الوكيل الهجين المتكامل")
-        self._root.geometry("1140x740")
+        self._root.geometry("1280x780")
         self._root.configure(bg=self.C["bg"])
         self._root.resizable(True, True)
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1290,12 +1290,12 @@ class VisionBotGUI21:
         left_outer = tk.Frame(body, bg=self.C["panel"],
                               highlightthickness=1,
                               highlightbackground=self.C["border"],
-                              width=360)
+                              width=420)
         left_outer.pack(side="left", fill="y", padx=(0,5))
         left_outer.pack_propagate(False)
 
         left_canvas = tk.Canvas(left_outer, bg=self.C["panel"],
-                                highlightthickness=0, width=340)
+                                highlightthickness=0, width=400)
         left_scrollbar = tk.Scrollbar(left_outer, orient="vertical",
                                       command=left_canvas.yview)
         left_canvas.configure(yscrollcommand=left_scrollbar.set)
@@ -1601,10 +1601,32 @@ class VisionBotGUI21:
                  bg=self.C["panel"], fg=self.C["accent"]).pack(side="left")
         self._btn(top,"مسح",self._clear_log,font_size=9).pack(side="right",padx=4)
 
-        self._log_txt = scrolledtext.ScrolledText(
-            p, bg=self.C["bg"], fg=self.C["text"],
-            font=("Consolas",10), bd=0, wrap="word", state="disabled")
-        self._log_txt.pack(fill="both", expand=True, padx=8, pady=(0,8))
+        # إطار السجل مع سكرول رأسي وأفقي
+        log_frame = tk.Frame(p, bg=self.C["bg"])
+        log_frame.pack(fill="both", expand=True, padx=8, pady=(0,8))
+
+        # سكرول رأسي
+        v_scroll = tk.Scrollbar(log_frame, orient="vertical")
+        v_scroll.pack(side="right", fill="y")
+
+        # سكرول أفقي
+        h_scroll = tk.Scrollbar(log_frame, orient="horizontal")
+        h_scroll.pack(side="bottom", fill="x")
+
+        # منطقة النص
+        self._log_txt = tk.Text(
+            log_frame,
+            bg=self.C["bg"], fg=self.C["text"],
+            font=("Consolas",10), bd=0,
+            wrap="none",
+            state="disabled",
+            yscrollcommand=v_scroll.set,
+            xscrollcommand=h_scroll.set,
+        )
+        self._log_txt.pack(fill="both", expand=True)
+
+        v_scroll.config(command=self._log_txt.yview)
+        h_scroll.config(command=self._log_txt.xview)
 
         for tag, color, bold in [
             ("SUCCESS", self.C["green"],  True),
@@ -1626,22 +1648,76 @@ class VisionBotGUI21:
 
         # وضع التعاون مع المستخدم
         if self._t_vars.get("user_collab") and self._t_vars["user_collab"].get():
+            task = self._task_txt.get("1.0","end").strip()
+            if not task:
+                messagebox.showerror("خطأ","أدخل وصف المهمة"); return
             seconds = self._countdown_var.get()
             self._safe_log(f"🤝 وضع التعاون — لديك {seconds} ثانية للذهاب للمكان المطلوب!", "WARNING")
-            self._set_status(f"⏱ اذهب للمكان المطلوب... {seconds}s", self.C["purple"])
-            self._root.update()
+            self._safe_log(f"📝 المهمة: {task}", "INFO")
+            self._set_status(f"⏱ اذهب للمكان... {seconds}s", self.C["purple"])
 
-            def _collab_countdown():
+            def _collab_worker():
+                # أولاً: توليد النص من النموذج (بدون رؤية)
+                try:
+                    from groq import Groq
+                    api_key = self._api_vars["groq_key"].get().strip()
+                    if not api_key:
+                        # جرب المفتاح العام
+                        api_key = self._api_vars["api_key"].get().strip()
+
+                    if api_key:
+                        client = Groq(api_key=api_key)
+                        self._root.after(0, lambda: self._safe_log("🧠 النموذج يولّد النص...", "INFO"))
+                        response = client.chat.completions.create(
+                            model="llama-3.3-70b-versatile",
+                            messages=[
+                                {"role": "system", "content": "أنت مساعد كتابة. أجب بالنص المطلوب فقط بدون أي مقدمة أو شرح. فقط النص الجاهز للكتابة."},
+                                {"role": "user", "content": task}
+                            ],
+                            max_tokens=2000,
+                            temperature=0.7,
+                        )
+                        generated_text = response.choices[0].message.content.strip()
+                        self._root.after(0, lambda: self._safe_log(f"✅ النص جاهز ({len(generated_text)} حرف)", "SUCCESS"))
+                    else:
+                        generated_text = task
+                        self._root.after(0, lambda: self._safe_log("⚠️ لا يوجد مفتاح Groq — سيكتب المهمة مباشرة", "WARNING"))
+
+                except Exception as ex:
+                    generated_text = task
+                    self._root.after(0, lambda: self._safe_log(f"⚠️ خطأ في توليد النص: {ex} — سيكتب المهمة مباشرة", "WARNING"))
+
+                # ثانياً: العد التنازلي
                 for i in range(seconds, 0, -1):
                     self._root.after(0, lambda i=i: self._set_status(
-                        f"⏱ ابدأ بعد... {i} ثانية", self.C["purple"]))
-                    self._root.after(0, lambda i=i: self._safe_log(
-                        f"⏱ {i}...", "WARNING") if i <= 5 else None)
+                        f"⏱ اذهب للمكان وانقر... {i}s", self.C["purple"]))
+                    if i <= 5:
+                        self._root.after(0, lambda i=i: self._safe_log(f"⏱ {i}...", "WARNING"))
                     time.sleep(1)
-                self._root.after(0, lambda: self._safe_log("🤝 ابدأ الكتابة الآن!", "SUCCESS"))
-                self._root.after(0, self._run_agent_now)
 
-            threading.Thread(target=_collab_countdown, daemon=True).start()
+                # ثالثاً: الكتابة بعد انتهاء العد
+                self._root.after(0, lambda: self._safe_log("✍️ يكتب الآن...", "SUCCESS"))
+                self._root.after(0, lambda: self._set_status("✍️ يكتب...", self.C["green"]))
+
+                try:
+                    import pyperclip
+                    pyperclip.copy(generated_text)
+                    import pyautogui
+                    time.sleep(0.3)
+                    pyautogui.hotkey("ctrl", "v")
+                    self._root.after(0, lambda: self._safe_log("✅ تم اللصق بنجاح!", "SUCCESS"))
+                except Exception:
+                    try:
+                        import pyautogui
+                        import pyperclip
+                        pyperclip.copy(generated_text)
+                        pyautogui.hotkey("ctrl", "v")
+                    except Exception as ex2:
+                        self._root.after(0, lambda: self._safe_log(f"❌ خطأ في الكتابة: {ex2}", "ERROR"))
+
+                self._root.after(0, lambda: self._set_status("✅ مكتمل — التعاون انتهى", self.C["green"]))
+
+            threading.Thread(target=_collab_worker, daemon=True).start()
             return
 
         self._run_agent_now()

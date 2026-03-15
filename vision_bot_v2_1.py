@@ -50,6 +50,230 @@ from tkinter import messagebox, scrolledtext
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Windows Accessibility Engine — pywin32 + pywinauto
+# ══════════════════════════════════════════════════════════════════════════════
+
+class WindowsAccessibilityEngine:
+    """
+    محرك الوصول الاحترافي لـ Windows.
+    
+    يدمج pywin32 + pywinauto للحصول على:
+    - إيجاد العناصر بالاسم أو النوع (دقة 100%)
+    - النقر المباشر بدون إحداثيات
+    - قراءة نص أي عنصر
+    - التحكم في النوافذ
+    
+    الأولوية: pywinauto أولاً ← pywin32 ثانياً ← pyautogui أخيراً
+    """
+
+    def __init__(self, log_cb=None):
+        self._log = log_cb or (lambda m, l: None)
+        self._pwa_app = None
+        self._win32_available = False
+        self._pwa_available   = False
+        self._init()
+
+    def _init(self):
+        try:
+            import win32gui, win32api, win32con
+            self._win32_available = True
+            self._log("✅ pywin32 جاهز", "INFO")
+        except ImportError:
+            self._log("⚠️ pywin32 غير مثبت — pip install pywin32", "WARNING")
+
+        try:
+            from pywinauto import Application, Desktop
+            self._pwa_available = True
+            self._log("✅ pywinauto جاهز", "INFO")
+        except ImportError:
+            self._log("⚠️ pywinauto غير مثبت — pip install pywinauto", "WARNING")
+
+    # ── البحث عن نافذة ────────────────────────────────────────────────
+
+    def find_window(self, title: str = None, class_name: str = None):
+        """يجد نافذة بالعنوان أو اسم الفئة."""
+        if not self._win32_available:
+            return None
+        try:
+            import win32gui
+            hwnd = win32gui.FindWindow(class_name, title)
+            if hwnd:
+                self._log(f"🪟 وجد النافذة: {title or class_name} (hwnd={hwnd})", "INFO")
+                return hwnd
+        except Exception as e:
+            self._log(f"⚠️ خطأ في البحث عن النافذة: {e}", "WARNING")
+        return None
+
+    def get_all_windows(self):
+        """يُعيد قائمة بجميع النوافذ المفتوحة."""
+        if not self._win32_available:
+            return []
+        import win32gui
+        windows = []
+        def _cb(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd)
+                if title:
+                    windows.append({"hwnd": hwnd, "title": title})
+        win32gui.EnumWindows(_cb, None)
+        return windows
+
+    def focus_window(self, hwnd):
+        """يضع النافذة في المقدمة."""
+        if not self._win32_available or not hwnd:
+            return False
+        try:
+            import win32gui, win32con
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+            time.sleep(0.3)
+            self._log(f"🪟 تم التركيز على النافذة (hwnd={hwnd})", "INFO")
+            return True
+        except Exception as e:
+            self._log(f"⚠️ خطأ في التركيز: {e}", "WARNING")
+            return False
+
+    # ── البحث عن عناصر الواجهة ────────────────────────────────────────
+
+    def find_element(self, window_title: str, element_name: str = None,
+                     element_type: str = None, timeout: int = 5):
+        """
+        يجد عنصراً في نافذة معينة باستخدام pywinauto.
+        
+        Args:
+            window_title: عنوان النافذة
+            element_name: اسم العنصر (نص الزر مثلاً)
+            element_type: نوع العنصر (Button, Edit, etc.)
+            timeout: وقت الانتظار بالثوانٍ
+            
+        Returns:
+            العنصر إذا وجد أو None
+        """
+        if not self._pwa_available:
+            return None
+        try:
+            from pywinauto import Application, timings
+            timings.Timings.Fast()
+            
+            app = Application(backend="uia").connect(title_re=f".*{window_title}.*", timeout=timeout)
+            win = app.top_window()
+            
+            if element_name and element_type:
+                elem = win.child_window(title=element_name, control_type=element_type)
+            elif element_name:
+                elem = win.child_window(title=element_name)
+            elif element_type:
+                elem = win.child_window(control_type=element_type)
+            else:
+                return win
+                
+            if elem.exists(timeout=timeout):
+                self._log(f"✅ وجد العنصر: {element_name or element_type}", "INFO")
+                return elem
+        except Exception as e:
+            self._log(f"⚠️ خطأ في البحث عن العنصر: {e}", "WARNING")
+        return None
+
+    def click_element(self, window_title: str, element_name: str = None,
+                      element_type: str = None) -> bool:
+        """ينقر على عنصر مباشرة بدون إحداثيات."""
+        elem = self.find_element(window_title, element_name, element_type)
+        if elem:
+            try:
+                elem.click_input()
+                self._log(f"✅ نقر على: {element_name or element_type}", "SUCCESS")
+                return True
+            except Exception as e:
+                self._log(f"⚠️ خطأ في النقر: {e}", "WARNING")
+        return False
+
+    def type_in_element(self, window_title: str, text: str,
+                        element_name: str = None) -> bool:
+        """يكتب نصاً في عنصر إدخال."""
+        elem = self.find_element(window_title, element_name, "Edit")
+        if elem:
+            try:
+                elem.set_text(text)
+                self._log(f"⌨ كتب في العنصر: {text[:40]}", "SUCCESS")
+                return True
+            except Exception as e:
+                self._log(f"⚠️ خطأ في الكتابة: {e}", "WARNING")
+        return False
+
+    def get_element_text(self, window_title: str, element_name: str = None) -> str:
+        """يقرأ نص عنصر."""
+        elem = self.find_element(window_title, element_name)
+        if elem:
+            try:
+                return elem.window_text()
+            except Exception:
+                pass
+        return ""
+
+    # ── فتح تطبيقات ───────────────────────────────────────────────────
+
+    def open_app(self, app_path: str, wait_for: str = None) -> bool:
+        """يفتح تطبيقاً ويتظر حتى يظهر."""
+        try:
+            import subprocess
+            subprocess.Popen(app_path)
+            if wait_for:
+                time.sleep(2)
+                hwnd = self.find_window(title=wait_for)
+                return hwnd is not None
+            return True
+        except Exception as e:
+            self._log(f"⚠️ خطأ في فتح التطبيق: {e}", "WARNING")
+            return False
+
+    def open_url_in_browser(self, url: str) -> bool:
+        """يفتح رابطاً في المتصفح الافتراضي."""
+        try:
+            import webbrowser
+            webbrowser.open(url)
+            self._log(f"🌐 فتح الرابط: {url}", "SUCCESS")
+            return True
+        except Exception as e:
+            self._log(f"⚠️ خطأ في فتح الرابط: {e}", "WARNING")
+            return False
+
+    # ── أدوات pywin32 المتقدمة ─────────────────────────────────────────
+
+    def send_keys_to_window(self, hwnd, keys: str) -> bool:
+        """يرسل ضغطات مفاتيح لنافذة معينة."""
+        if not self._win32_available or not hwnd:
+            return False
+        try:
+            import win32gui, win32con, win32api
+            win32gui.SetForegroundWindow(hwnd)
+            time.sleep(0.2)
+            import pyautogui
+            pyautogui.typewrite(keys, interval=0.05)
+            return True
+        except Exception as e:
+            self._log(f"⚠️ خطأ في إرسال المفاتيح: {e}", "WARNING")
+            return False
+
+    def get_window_at_cursor(self) -> dict:
+        """يُعيد معلومات النافذة تحت المؤشر."""
+        if not self._win32_available:
+            return {}
+        try:
+            import win32gui, win32api
+            x, y = win32api.GetCursorPos()
+            hwnd = win32gui.WindowFromPoint((x, y))
+            title = win32gui.GetWindowText(hwnd)
+            rect  = win32gui.GetWindowRect(hwnd)
+            return {"hwnd": hwnd, "title": title, "rect": rect, "x": x, "y": y}
+        except Exception:
+            return {}
+
+    @property
+    def is_available(self) -> bool:
+        return self._win32_available or self._pwa_available
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # الثوابت والمجلدات
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1064,7 +1288,25 @@ class VisionAgentV21:
             dur = float(self._config.get("move_duration", 0.25))
 
             if act in ("CLICK", "DOUBLE_CLICK", "RIGHT_CLICK"):
-                # تحويل إحداثيات /1000
+                # ── محاولة Accessibility أولاً (دقة 100%) ──
+                if self._win_accessibility.is_available and elem:
+                    # ابحث عن النافذة الحالية
+                    win_info = self._win_accessibility.get_window_at_cursor()
+                    win_title = win_info.get("title", "")
+                    if win_title:
+                        acc_success = self._win_accessibility.click_element(
+                            window_title=win_title,
+                            element_name=elem
+                        )
+                        if acc_success:
+                            self._log(f"🎯 Accessibility نقر على: {elem}", "SUCCESS")
+                            if self._config.get("memory_enabled"):
+                                pass  # لا نحتاج إحداثيات مع Accessibility
+                            return True
+                        else:
+                            self._log(f"⚠️ Accessibility فشل — تجربة الإحداثيات", "WARNING")
+
+                # ── fallback: إحداثيات /1000 ──
                 x_n = float(action.get("x", 0))
                 y_n = float(action.get("y", 0))
                 x, y = self._coords.to_real(x_n, y_n)
@@ -1296,11 +1538,21 @@ class VisionBotGUI21:
 
         left_canvas = tk.Canvas(left_outer, bg=self.C["panel"],
                                 highlightthickness=0, width=400)
-        left_scrollbar = tk.Scrollbar(left_outer, orient="vertical",
-                                      command=left_canvas.yview)
-        left_canvas.configure(yscrollcommand=left_scrollbar.set)
 
-        left_scrollbar.pack(side="right", fill="y")
+        # سكرول رأسي
+        left_vscroll = tk.Scrollbar(left_outer, orient="vertical",
+                                    command=left_canvas.yview,
+                                    bg=self.C["border"])
+        # سكرول أفقي
+        left_hscroll = tk.Scrollbar(left_outer, orient="horizontal",
+                                    command=left_canvas.xview,
+                                    bg=self.C["border"])
+
+        left_canvas.configure(yscrollcommand=left_vscroll.set,
+                              xscrollcommand=left_hscroll.set)
+
+        left_vscroll.pack(side="right", fill="y")
+        left_hscroll.pack(side="bottom", fill="x")
         left_canvas.pack(side="left", fill="both", expand=True)
 
         left = tk.Frame(left_canvas, bg=self.C["panel"])
@@ -1344,9 +1596,25 @@ class VisionBotGUI21:
         ).pack(side="left", padx=16, pady=10)
 
         # مؤشرات 11 تقنية
+        # فحص pywin32 و pywinauto
+        _win32_ok = False
+        _pwa_ok   = False
+        try:
+            import win32gui
+            _win32_ok = True
+        except ImportError:
+            pass
+        try:
+            import pywinauto
+            _pwa_ok = True
+        except ImportError:
+            pass
+
         techs = [
-            ("①Grid",    True),
-            ("②Prompt",  True),
+            ("①Grid",       True),
+            ("②Prompt",     True),
+            ("🎯Win32",      _win32_ok),
+            ("🎯pywinauto",  _pwa_ok),
             ("③Coords",  True),
             ("④Correct", True),
             ("⑤Delta",   True),

@@ -476,7 +476,14 @@ class ActionParser:
 قواعد صارمة:
 • confidence < 0.55 → action: "FAIL" إلزامياً
 • المهمة مكتملة → action: "DONE"
-• لا تخمّن مطلقاً — الشك = FAIL"""
+• لا تخمّن مطلقاً — الشك = FAIL
+
+أوامر إضافية متاحة (استخدمها عند الحاجة):
+• action: "OPEN_URL"  + text: "https://..." → لفتح رابط في المتصفح مباشرة
+• action: "OPEN_APP"  + text: "notepad"    → لفتح تطبيق بالاسم
+• action: "FIND_WINDOW" + text: "YouTube"  → للتركيز على نافذة مفتوحة
+
+مثال: إذا طُلب فتح يوتيوب → استخدم OPEN_URL مع text: "https://youtube.com"""
 
     @staticmethod
     def parse(raw: str) -> Dict[str, Any]:
@@ -1288,25 +1295,7 @@ class VisionAgentV21:
             dur = float(self._config.get("move_duration", 0.25))
 
             if act in ("CLICK", "DOUBLE_CLICK", "RIGHT_CLICK"):
-                # ── محاولة Accessibility أولاً (دقة 100%) ──
-                if self._win_accessibility.is_available and elem:
-                    # ابحث عن النافذة الحالية
-                    win_info = self._win_accessibility.get_window_at_cursor()
-                    win_title = win_info.get("title", "")
-                    if win_title:
-                        acc_success = self._win_accessibility.click_element(
-                            window_title=win_title,
-                            element_name=elem
-                        )
-                        if acc_success:
-                            self._log(f"🎯 Accessibility نقر على: {elem}", "SUCCESS")
-                            if self._config.get("memory_enabled"):
-                                pass  # لا نحتاج إحداثيات مع Accessibility
-                            return True
-                        else:
-                            self._log(f"⚠️ Accessibility فشل — تجربة الإحداثيات", "WARNING")
-
-                # ── fallback: إحداثيات /1000 ──
+                # ── إحداثيات /1000 (الطريقة الرئيسية) ──
                 x_n = float(action.get("x", 0))
                 y_n = float(action.get("y", 0))
                 x, y = self._coords.to_real(x_n, y_n)
@@ -1366,6 +1355,36 @@ class VisionAgentV21:
                 self._pag.scroll(-amt if d == "down" else amt, x=x, y=y)
                 self._log(f"🖱 تمرير {d} ×{amt}", "INFO")
                 return True
+
+            elif act == "OPEN_URL":
+                url = action.get("text", "")
+                if url:
+                    ok = self._win_accessibility.open_url_in_browser(url)
+                    self._log(f"🌐 فتح: {url} — {'✅' if ok else '❌'}", "SUCCESS" if ok else "ERROR")
+                    return ok
+                return False
+
+            elif act == "OPEN_APP":
+                app_path = action.get("text", "")
+                if app_path:
+                    import subprocess
+                    subprocess.Popen(app_path, shell=True)
+                    self._log(f"🚀 فتح التطبيق: {app_path}", "SUCCESS")
+                    time.sleep(1.5)
+                    return True
+                return False
+
+            elif act == "FIND_WINDOW":
+                title = action.get("text", "")
+                if title:
+                    windows = self._win_accessibility.get_all_windows()
+                    matches = [w for w in windows if title.lower() in w["title"].lower()]
+                    if matches:
+                        hwnd = matches[0]["hwnd"]
+                        self._win_accessibility.focus_window(hwnd)
+                        self._log(f"🪟 تركيز على: {matches[0]['title']}", "SUCCESS")
+                        return True
+                return False
 
             elif act in ("DONE", "FAIL"):
                 return True

@@ -1410,6 +1410,12 @@ class VisionAgentV21:
         self._history   = []
         self._delta.reset()
 
+        # ══ خطوة صفر: تصغير VisionBot ورؤية الشاشة الحقيقية ══
+        self._log("🔽 تصغير النافذة للرؤية الصحيحة...", "INFO")
+        if self._root_ref:
+            self._root_ref.after(0, self._root_ref.iconify)
+            time.sleep(1.2)  # انتظر حتى تختفي النافذة
+
         # ⑩ تصنيف التعقيد
         tier    = ModelSelector.classify(task)
         tier_lbl = ModelSelector.describe(tier)
@@ -1538,6 +1544,7 @@ class VisionBotGUI21:
 
         self._build_ui()
         self._agent = VisionAgentV21(self._config, self._safe_log)
+        self._agent._root_ref = self._root  # تمرير مرجع النافذة للوكيل
 
     # ── بناء الواجهة ─────────────────────────────────────────────────
 
@@ -1813,14 +1820,36 @@ class VisionBotGUI21:
 
         # المهمة
         self._sec(p, "◈  المهمة")
+        # إطار المهمة مع زر الميكروفون
+        task_frame = tk.Frame(p, bg=self.C["panel"])
+        task_frame.pack(fill="x", padx=10)
+
         self._task_txt = tk.Text(
-            p, height=4, wrap="word",
+            task_frame, height=4, wrap="word",
             bg=self.C["inp"], fg=self.C["text"],
-            font=("Consolas",10), bd=0,
+            font=("Arial",10), bd=0,
             insertbackground=self.C["accent"],
+            # RTL للعربية
         )
-        self._task_txt.pack(fill="x", padx=10, ipady=4)
+        self._task_txt.pack(side="left", fill="x", expand=True, ipady=4)
         self._task_txt.insert("1.0", "مثال: افتح المتصفح وابحث عن أحدث أخبار الذكاء الاصطناعي")
+        # ضبط اتجاه RTL
+        self._task_txt.tag_configure("rtl", justify="right")
+        self._task_txt.tag_add("rtl", "1.0", "end")
+        self._task_txt.bind("<KeyRelease>", lambda e: (
+            self._task_txt.tag_add("rtl", "1.0", "end")
+        ))
+
+        # زر الميكروفون
+        self._mic_btn = tk.Button(
+            task_frame, text="🎤",
+            command=self._start_mic,
+            bg=self.C["btn"], fg=self.C["text"],
+            font=("Arial",14), bd=0,
+            cursor="hand2", padx=6,
+            activebackground=self.C["red"],
+        )
+        self._mic_btn.pack(side="right", padx=(4,0), fill="y")
 
         # العد التنازلي للتعاون
         cd_frame = tk.Frame(p, bg=self.C["panel"])
@@ -2038,6 +2067,8 @@ class VisionBotGUI21:
     def _on_done(self, success: bool, msg: str) -> None:
         c = self.C["green"] if success else self.C["red"]
         t = "⬤  مكتمل" if success else "⬤  فشل"
+        # أعد النافذة للظهور
+        self._root.after(0, self._root.deiconify)
         self._root.after(0, lambda: self._set_status(f"{t} — {msg}", c))
         if success:
             self._root.after(0, lambda: messagebox.showinfo("✅ مكتمل", msg))
@@ -2065,6 +2096,51 @@ class VisionBotGUI21:
         if messagebox.askyesno("تأكيد","مسح كل الذاكرة؟"):
             self._agent._memory.clear()
             self._safe_log("🗑 تم مسح الذاكرة", "WARNING")
+
+    def _start_mic(self) -> None:
+        """يسجل الصوت ويحوله لنص في مربع المهمة."""
+        self._mic_btn.configure(bg=self.C["red"], text="⏹")
+        self._safe_log("🎤 جاري التسجيل... تكلم الآن", "WARNING")
+
+        def _record():
+            try:
+                import speech_recognition as sr
+                r = sr.Recognizer()
+                with sr.Microphone() as source:
+                    r.adjust_for_ambient_noise(source, duration=0.5)
+                    audio = r.listen(source, timeout=10, phrase_time_limit=15)
+
+                # تحويل للنص — يدعم العربية والإنجليزية
+                try:
+                    text = r.recognize_google(audio, language="ar-SA")
+                except Exception:
+                    try:
+                        text = r.recognize_google(audio, language="en-US")
+                    except Exception:
+                        text = ""
+
+                if text:
+                    self._root.after(0, lambda: (
+                        self._task_txt.delete("1.0", "end"),
+                        self._task_txt.insert("1.0", text),
+                        self._task_txt.tag_add("rtl", "1.0", "end"),
+                        self._safe_log(f"✅ تم التعرف: {text}", "SUCCESS")
+                    ))
+                else:
+                    self._root.after(0, lambda: self._safe_log("⚠️ لم يتم التعرف على الصوت", "WARNING"))
+
+            except ImportError:
+                self._root.after(0, lambda: messagebox.showwarning(
+                    "تثبيت مطلوب",
+                    "pip install SpeechRecognition pyaudio"
+                ))
+            except Exception as ex:
+                self._root.after(0, lambda: self._safe_log(f"❌ خطأ: {ex}", "ERROR"))
+            finally:
+                self._root.after(0, lambda: self._mic_btn.configure(
+                    bg=self.C["btn"], text="🎤"))
+
+        threading.Thread(target=_record, daemon=True).start()
 
     def _save(self, silent: bool = False) -> None:
         self._config.set("provider", self._prov_var.get())

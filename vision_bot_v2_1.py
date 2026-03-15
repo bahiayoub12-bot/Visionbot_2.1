@@ -483,7 +483,13 @@ class ActionParser:
 • action: "OPEN_APP"  + text: "notepad"    → لفتح تطبيق بالاسم
 • action: "FIND_WINDOW" + text: "YouTube"  → للتركيز على نافذة مفتوحة
 
-مثال: إذا طُلب فتح يوتيوب → استخدم OPEN_URL مع text: "https://youtube.com"""
+مثال: إذا طُلب فتح يوتيوب → استخدم OPEN_URL مع text: "https://youtube.com"
+
+حقل إلزامي جديد — expected_outcome:
+أضف دائماً في الـ JSON:
+"expected_outcome": "وصف ما يجب أن يتغير بعد هذا الإجراء"
+مثال: "expected_outcome": "ظهور نافذة المتصفح مع موقع يوتيوب"
+إذا لم يتحقق هذا التوقع → سيتم تفعيل التراجع تلقائياً"""
 
     @staticmethod
     def parse(raw: str) -> Dict[str, Any]:
@@ -1219,6 +1225,84 @@ class VisionAgentV21:
         self._watcher:  Optional[SilentWatcher] = None
         self._init_libs()
 
+    def _try_direct_action(self, task: str) -> Optional[str]:
+        """
+        ينفذ المهام البسيطة مباشرة بدون AI:
+        - فتح مواقع الإنترنت
+        - فتح تطبيقات Windows
+        - أوامر النظام البسيطة
+        """
+        import webbrowser, subprocess
+        t = task.lower().strip()
+
+        # قاموس المواقع الشائعة
+        sites = {
+            "يوتيوب": "https://youtube.com",
+            "youtube": "https://youtube.com",
+            "جوجل": "https://google.com",
+            "google": "https://google.com",
+            "فيسبوك": "https://facebook.com",
+            "facebook": "https://facebook.com",
+            "تويتر": "https://twitter.com",
+            "twitter": "https://twitter.com",
+            "انستقرام": "https://instagram.com",
+            "instagram": "https://instagram.com",
+            "واتساب": "https://web.whatsapp.com",
+            "whatsapp": "https://web.whatsapp.com",
+            "تيك توك": "https://tiktok.com",
+            "tiktok": "https://tiktok.com",
+            "نتفليكس": "https://netflix.com",
+            "netflix": "https://netflix.com",
+            "chatgpt": "https://chat.openai.com",
+            "github": "https://github.com",
+            "gmail": "https://gmail.com",
+        }
+
+        # قاموس التطبيقات
+        apps = {
+            "المفكرة": "notepad",
+            "notepad": "notepad",
+            "الحاسبة": "calc",
+            "calculator": "calc",
+            "calc": "calc",
+            "الرسام": "mspaint",
+            "paint": "mspaint",
+            "word": "winword",
+            "excel": "excel",
+            "متصفح": "start chrome",
+            "chrome": "start chrome",
+            "firefox": "start firefox",
+            "edge": "start msedge",
+            "opera": "start opera",
+        }
+
+        # كشف إذا كان الطلب فتح موقع
+        open_words = ["افتح", "اذهب", "open", "go to", "browse", "ابحث في", "شغل"]
+        is_open = any(w in t for w in open_words)
+
+        if is_open or "موقع" in t or "site" in t or "http" in t:
+            # تحقق من المواقع المعروفة
+            for name, url in sites.items():
+                if name in t:
+                    webbrowser.open(url)
+                    return f"فتح {name} ✅"
+
+            # إذا كان رابطاً مباشراً
+            import re
+            url_match = re.search(r'https?://\S+', task)
+            if url_match:
+                webbrowser.open(url_match.group())
+                return f"فتح الرابط ✅"
+
+        # كشف إذا كان الطلب فتح تطبيق
+        if is_open or "شغل" in t or "run" in t:
+            for name, cmd in apps.items():
+                if name in t:
+                    subprocess.Popen(cmd, shell=True)
+                    return f"فتح {name} ✅"
+
+        return None  # لم يُكتشف أمر مباشر — أكمل مع AI
+
     def _init_libs(self) -> None:
         try:
             import pyautogui as pag
@@ -1333,8 +1417,18 @@ class VisionAgentV21:
 
             elif act == "TYPE":
                 text = action.get("text", "")
-                self._pag.write(str(text), interval=0.04)
-                self._log(f"⌨ كتابة: {str(text)[:40]}", "INFO")
+                # كتابة مع مراقبة النوافذ المنبثقة
+                try:
+                    import pyperclip
+                    pyperclip.copy(str(text))
+                    self._pag.hotkey("ctrl", "v")
+                    self._log(f"⌨ لصق: {str(text)[:60]}", "INFO")
+                except Exception:
+                    self._pag.write(str(text), interval=0.03)
+                    self._log(f"⌨ كتابة: {str(text)[:40]}", "INFO")
+                # تحقق من نوافذ منبثقة بعد الكتابة
+                time.sleep(0.3)
+                self._check_popup()
                 return True
 
             elif act == "HOTKEY":
@@ -1352,8 +1446,12 @@ class VisionAgentV21:
                 x, y = self._coords.to_real(x_n, y_n)
                 d     = action.get("direction", "down")
                 amt   = int(action.get("amount", 3))
-                self._pag.scroll(-amt if d == "down" else amt, x=x, y=y)
+                # تمرير تدريجي مع مراقبة
+                for _ in range(amt):
+                    self._pag.scroll(-1 if d == "down" else 1, x=x, y=y)
+                    time.sleep(0.1)
                 self._log(f"🖱 تمرير {d} ×{amt}", "INFO")
+                self._check_popup()
                 return True
 
             elif act == "OPEN_URL":
@@ -1386,7 +1484,15 @@ class VisionAgentV21:
                         return True
                 return False
 
-            elif act in ("DONE", "FAIL"):
+            elif act == "DONE":
+                # تحقق حقيقي — أعد النافذة والتقط صورة للتأكد
+                self._log("🔍 تحقق من اكتمال المهمة...", "INFO")
+                if self._root_ref:
+                    self._root_ref.after(0, self._root_ref.deiconify)
+                    time.sleep(0.5)
+                return True
+
+            elif act == "FAIL":
                 return True
 
             else:
@@ -1414,7 +1520,16 @@ class VisionAgentV21:
         self._log("🔽 تصغير النافذة للرؤية الصحيحة...", "INFO")
         if self._root_ref:
             self._root_ref.after(0, self._root_ref.iconify)
-            time.sleep(1.2)  # انتظر حتى تختفي النافذة
+            time.sleep(2.5)  # انتظر حتى تختفي النافذة كاملاً
+
+        # ══ كشف المهام البسيطة وتنفيذها مباشرة بدون AI ══
+        direct_result = self._try_direct_action(task)
+        if direct_result:
+            self._log(f"⚡ تم مباشرة: {direct_result}", "SUCCESS")
+            if done_cb:
+                done_cb(True, direct_result)
+            self.is_running = False
+            return
 
         # ⑩ تصنيف التعقيد
         tier    = ModelSelector.classify(task)
@@ -1428,6 +1543,7 @@ class VisionAgentV21:
         step_delay = float(self._config.get("step_delay", 1.0))
         sw, sh     = self._coords.get_screen_size()
 
+        consecutive_failures = 0
         for step in range(1, max_steps + 1):
             if stop_event.is_set():
                 self._log("🛑 إيقاف المستخدم", "WARNING")
@@ -1467,15 +1583,55 @@ class VisionAgentV21:
                 self.is_running = False
                 return
 
-            success = self.execute_action(action, llm, app_ctx)
+            expected = action.get("expected_outcome", "")
+            success  = self.execute_action(action, llm, app_ctx)
+
+            # ══ Post-Action Validation ══
+            if success and expected:
+                time.sleep(step_delay)
+                val_result = self.capture_for_api(grid=False)
+                if val_result:
+                    val_b64, _ = val_result
+                    val_action = llm.analyze(
+                        val_b64,
+                        f"هل تحقق هذا التوقع: '{expected}'؟ أجب فقط بـ JSON: achieved يساوي true أو false",
+                        [], "", (sw, sh)
+                    )
+                    achieved = val_action.get("achieved", True)
+                    if not achieved:
+                        self._log(f"⚠️ التوقع لم يتحقق: {expected}", "WARNING")
+                        self._log(f"🔄 تفعيل التراجع...", "WARNING")
+                        # Global Escape — اضغط Escape للخروج من أي حالة
+                        try:
+                            import pyautogui
+                            pyautogui.press("escape")
+                            time.sleep(0.5)
+                            consecutive_failures += 1
+                        except Exception:
+                            pass
+                    else:
+                        self._log(f"✅ التوقع تحقق: {expected}", "SUCCESS")
+                        consecutive_failures = 0
+            else:
+                time.sleep(step_delay)
+
+            # إذا فشلت 3 خطوات متتالية → إعادة التخطيط الكاملة
+            if consecutive_failures >= 3:
+                self._log("🔄 3 فشل متتالي — إعادة التخطيط من الصفر", "WARNING")
+                try:
+                    import pyautogui
+                    pyautogui.hotkey("alt", "F4")
+                    time.sleep(1)
+                except Exception:
+                    pass
+                consecutive_failures = 0
+                self._history = []  # امسح التاريخ وابدأ من جديد
 
             status = "✅" if success else "⚠️"
             self._history.append(
                 f"{status} {act} على '{action.get('element',act)}' "
-                f"[conf={action.get('confidence',0):.0%}]"
+                f"[conf={action.get('confidence',0):.0%}] → {expected[:40] if expected else ''}"
             )
-
-            time.sleep(step_delay)
 
         msg = f"⚠️ انتهت {max_steps} خطوة"
         self._log(msg, "WARNING")
@@ -1501,6 +1657,35 @@ class VisionAgentV21:
     def stop_watcher(self) -> None:
         if self._watcher:
             self._watcher.stop()
+
+    def _check_popup(self) -> None:
+        """يكشف النوافذ المنبثقة ويغلقها تلقائياً."""
+        if not self._win32_available:
+            return
+        try:
+            import win32gui
+            # ابحث عن نوافذ صغيرة مفتوحة فجأة
+            popups = []
+            def _enum(hwnd, _):
+                if win32gui.IsWindowVisible(hwnd):
+                    title = win32gui.GetWindowText(hwnd)
+                    rect  = win32gui.GetWindowRect(hwnd)
+                    w = rect[2] - rect[0]
+                    h = rect[3] - rect[1]
+                    # نافذة صغيرة < 400px = popup محتمل
+                    if title and w < 400 and h < 300:
+                        popups.append({"hwnd": hwnd, "title": title})
+            win32gui.EnumWindows(_enum, None)
+            
+            for popup in popups:
+                if any(w in popup["title"].lower() for w in 
+                       ["error", "warning", "خطأ", "تحذير", "alert", "confirm"]):
+                    self._log(f"🔔 نافذة منبثقة: {popup['title']} — ضغط Enter", "WARNING")
+                    import pyautogui
+                    pyautogui.press("enter")
+                    time.sleep(0.3)
+        except Exception:
+            pass
 
     def _log(self, msg: str, level: str = "INFO") -> None:
         getattr(_logger, level.lower(), _logger.info)(msg)
@@ -1730,8 +1915,12 @@ class VisionBotGUI21:
                      font=("Consolas",7)).pack(anchor="w", padx=10)
 
             # القائمة المنسدلة
-            mv = tk.StringVar(value=self._config.get(f"model_{key}", ""))
+            # var_real: القيمة الحقيقية المحفوظة
+            # var_display: ما يظهر في القائمة فقط
+            real_val = self._config.get(f"model_{key}", "")
+            mv = tk.StringVar(value=real_val)
             self._model_vars[key] = mv
+            var_display = tk.StringVar()
 
             # إطار القائمة + زر إضافة
             combo_frame = tk.Frame(p, bg=self.C["panel"])
@@ -1740,28 +1929,31 @@ class VisionBotGUI21:
             # Combobox
             from tkinter import ttk
             display_names = [m[0] for m in models_list]
-            cb = ttk.Combobox(combo_frame, textvariable=mv,
+            cb = ttk.Combobox(combo_frame, textvariable=var_display,
                               values=display_names,
                               font=("Consolas",8), state="normal",
                               width=28)
             cb.pack(side="left", fill="x", expand=True, ipady=3)
 
-            # تحويل الاختيار من اسم العرض للقيمة الحقيقية
-            def _on_select(event, cb=cb, models=models_list, var=mv):
+            # عند الاختيار: احفظ الاسم الحقيقي في mv فقط
+            def _on_select(event, cb=cb, models=models_list, real_var=mv):
                 selected = cb.get()
                 for display, real in models:
                     if display == selected:
-                        var.set(real)
-                        cb.set(display)
+                        real_var.set(real)
                         return
+                # إذا كتب يدوياً احفظ ما كتبه
+                real_var.set(selected)
             cb.bind("<<ComboboxSelected>>", _on_select)
+            cb.bind("<FocusOut>", lambda e, cb=cb, real_var=mv: real_var.set(cb.get()) if "[" not in cb.get() else None)
 
             # ضبط القيمة الحالية
-            current_val = self._config.get(f"model_{key}", "")
             for display, real in models_list:
-                if real == current_val:
-                    cb.set(display)
+                if real == real_val:
+                    var_display.set(display)
                     break
+            else:
+                var_display.set(real_val)
 
             # زر + لإضافة نموذج مخصص
             def _add_custom(key=key, cb=cb, models=models_list, var=mv):
@@ -2145,15 +2337,40 @@ class VisionBotGUI21:
         self._config.set("provider", self._prov_var.get())
         for key, var in self._api_vars.items():
             self._config.set(key, var.get().strip())
-        # حفظ النماذج المخصصة لكل مزود
+        # حفظ النماذج — تأكد من حفظ الاسم الحقيقي وليس اسم العرض
+        _all_models = {
+            "api_key": [
+                ("claude-sonnet-4-6 [95] 👁",         "claude-sonnet-4-6"),
+                ("claude-opus-4-6 [98] 👁",           "claude-opus-4-6"),
+                ("claude-haiku-4-5-20251001 [80] 👁", "claude-haiku-4-5-20251001"),
+                ("gpt-4o [95] 👁",                    "gpt-4o"),
+                ("gpt-4o-mini [80] 👁",               "gpt-4o-mini"),
+                ("gemini-2.5-pro-latest [97] 👁",     "gemini-2.5-pro-latest"),
+                ("gemini-2.0-flash [88] 👁",          "gemini-2.0-flash"),
+                ("gemini-1.5-pro [92] 👁",            "gemini-1.5-pro"),
+                ("gemini-1.5-flash [80] 👁",          "gemini-1.5-flash"),
+            ],
+            "groq_key": [
+                ("llama-4-maverick [95] 👁",  "meta-llama/llama-4-maverick-17b-128e-instruct"),
+                ("llama-4-scout [90] 👁",     "meta-llama/llama-4-scout-17b-16e-instruct"),
+                ("llama-3.3-70b [75] 📝",     "llama-3.3-70b-versatile"),
+                ("llama-3.1-8b [55] ⚡",      "llama-3.1-8b-instant"),
+                ("deepseek-r1-70b [72] 🧠",   "deepseek-r1-distill-llama-70b"),
+            ],
+            "nvidia_key": [
+                ("phi-3.5-vision [85] 👁",       "microsoft/phi-3.5-vision-instruct"),
+                ("llama-3.2-90b-vision [92] 👁", "meta/llama-3.2-90b-vision-instruct"),
+                ("nemotron-70b [88] 📝",         "nvidia/llama-3.1-nemotron-70b-instruct"),
+            ],
+        }
         for key, var in self._model_vars.items():
             val = var.get().strip()
-            # إذا كان اسم العرض (يحتوي [رقم]) نحوله للقيمة الحقيقية
-            import re as _re
-            real_match = _re.search(r'\[[\d?]+\].*$', val)
-            if real_match:
-                # ابحث عن القيمة الحقيقية في القوائم
-                pass  # القيمة الحقيقية محفوظة مباشرة في StringVar
+            # إذا كان اسم عرض (يحتوي [) ابحث عن الاسم الحقيقي
+            if "[" in val:
+                for display, real in _all_models.get(key, []):
+                    if display == val or real in val:
+                        val = real
+                        break
             self._config.set(f"model_{key}", val)
 
         # حفظ إعدادات التعاون

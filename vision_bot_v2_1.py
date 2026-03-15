@@ -1693,7 +1693,6 @@ class VisionBotGUI21:
                 ("llama-4-maverick [95] 👁",   "meta-llama/llama-4-maverick-17b-128e-instruct"),
                 ("llama-4-scout [90] 👁",      "meta-llama/llama-4-scout-17b-16e-instruct"),
                 ("llama-3.3-70b [75] 📝",      "llama-3.3-70b-versatile"),
-                ("llama-3.1-70b [70] 📝",      "llama-3.1-70b-versatile"),
                 ("llama-3.1-8b [55] ⚡",       "llama-3.1-8b-instant"),
                 ("deepseek-r1-70b [72] 🧠",    "deepseek-r1-distill-llama-70b"),
             ],

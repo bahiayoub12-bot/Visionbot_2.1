@@ -1687,15 +1687,21 @@ class VisionBotGUI21:
                     generated_text = task
                     self._root.after(0, lambda: self._safe_log(f"⚠️ خطأ في توليد النص: {ex} — سيكتب المهمة مباشرة", "WARNING"))
 
-                # ثانياً: العد التنازلي
+                # ثانياً: العد التنازلي مع تتبع آخر موقع للماوس
+                import pyautogui as _pag
+                last_x, last_y = _pag.position()
+
                 for i in range(seconds, 0, -1):
                     self._root.after(0, lambda i=i: self._set_status(
                         f"⏱ اذهب للمكان وانقر... {i}s", self.C["purple"]))
                     if i <= 5:
                         self._root.after(0, lambda i=i: self._safe_log(f"⏱ {i}...", "WARNING"))
                     time.sleep(1)
+                    # تتبع آخر موقع للماوس باستمرار
+                    last_x, last_y = _pag.position()
 
                 # ثالثاً: الكتابة بعد انتهاء العد
+                # last_x, last_y = آخر مكان كان فيه الماوس
                 self._root.after(0, lambda: self._safe_log("✍️ يكتب الآن...", "SUCCESS"))
                 self._root.after(0, lambda: self._set_status("✍️ يكتب...", self.C["green"]))
 
@@ -1707,10 +1713,15 @@ class VisionBotGUI21:
                     pyperclip.copy(generated_text)
                     time.sleep(0.1)
 
-                    # الصق مباشرة — التركيز عند المستخدم وليس عند البرنامج
-                    pyautogui.hotkey("ctrl", "v")
+                    # انقر على آخر مكان كان فيه الماوس
+                    pyautogui.click(last_x, last_y)
+                    time.sleep(0.3)
 
-                    self._root.after(0, lambda: self._safe_log(f"✅ تم: {generated_text[:80]}", "SUCCESS"))
+                    # الصق
+                    pyautogui.hotkey("ctrl", "v")
+                    time.sleep(0.1)
+
+                    self._root.after(0, lambda: self._safe_log(f"✅ تم الكتابة: {generated_text[:60]}...", "SUCCESS"))
 
                 except Exception as ex:
                     self._root.after(0, lambda: self._safe_log(f"❌ خطأ: {ex}", "ERROR"))

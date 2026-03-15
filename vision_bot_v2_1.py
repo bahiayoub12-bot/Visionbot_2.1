@@ -1269,12 +1269,34 @@ class VisionBotGUI21:
         body = tk.Frame(self._root, bg=self.C["bg"])
         body.pack(fill="both", expand=True, padx=8, pady=5)
 
-        left = tk.Frame(body, bg=self.C["panel"],
-                        highlightthickness=1,
-                        highlightbackground=self.C["border"],
-                        width=360)
-        left.pack(side="left", fill="y", padx=(0,5))
-        left.pack_propagate(False)
+        # اللوحة اليسرى مع Scrollbar
+        left_outer = tk.Frame(body, bg=self.C["panel"],
+                              highlightthickness=1,
+                              highlightbackground=self.C["border"],
+                              width=360)
+        left_outer.pack(side="left", fill="y", padx=(0,5))
+        left_outer.pack_propagate(False)
+
+        left_canvas = tk.Canvas(left_outer, bg=self.C["panel"],
+                                highlightthickness=0, width=340)
+        left_scrollbar = tk.Scrollbar(left_outer, orient="vertical",
+                                      command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+
+        left_scrollbar.pack(side="right", fill="y")
+        left_canvas.pack(side="left", fill="both", expand=True)
+
+        left = tk.Frame(left_canvas, bg=self.C["panel"])
+        left_canvas.create_window((0, 0), window=left, anchor="nw")
+
+        def _on_frame_configure(e):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+        left.bind("<Configure>", _on_frame_configure)
+
+        def _on_mousewheel(e):
+            left_canvas.yview_scroll(int(-1*(e.delta/120)), "units")
+        left_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
         self._build_left(left)
 
         right = tk.Frame(body, bg=self.C["panel"],

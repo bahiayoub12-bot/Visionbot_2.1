@@ -120,7 +120,7 @@ class ConfigManager:
         "claude": "claude-sonnet-4-5",
         "openai": "gpt-4o",
         "gemini": "gemini-1.5-pro",
-        "groq":   "llama-3.2-11b-vision-preview",
+        "groq":   "meta-llama/llama-4-scout-17b-16e-instruct",
         "nvidia": "microsoft/phi-3.5-vision-instruct",
     }
 
@@ -128,7 +128,7 @@ class ConfigManager:
     TIER_MODELS: Dict[str, Dict[str, str]] = {
         "simple": {
             "provider": "groq",
-            "model":    "llama-3.2-11b-vision-preview",
+            "model":    "meta-llama/llama-4-scout-17b-16e-instruct",
         },
         "medium": {
             "provider": "claude",
@@ -167,8 +167,22 @@ class ConfigManager:
         self.save()
 
     def get_model(self) -> str:
+        provider = self.get("provider", "claude")
+        # أولاً: تحقق من النموذج المخصص للمزود
+        key_map = {
+            "claude":  "model_api_key",
+            "openai":  "model_api_key",
+            "gemini":  "model_api_key",
+            "groq":    "model_groq_key",
+            "nvidia":  "model_nvidia_key",
+        }
+        custom_key = key_map.get(provider, "model_api_key")
+        custom = self.get(custom_key, "").strip()
+        if custom:
+            return custom
+        # ثانياً: النموذج العام
         m = self.get("model", "")
-        return m or self.DEFAULT_MODELS.get(self.get("provider", "claude"), "")
+        return m or self.DEFAULT_MODELS.get(provider, "")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1360,24 +1374,54 @@ class VisionBotGUI21:
                            activebackground=self.C["panel"],
                            font=("Consolas",8)).pack(side="left", padx=3)
 
-        # مفاتيح API
+        # مفاتيح API مع خانة النموذج لكل مزود
         self._sec(p, "◈  مفاتيح API")
-        labels_keys = [
-            ("Claude / OpenAI / Gemini:", "api_key"),
-            ("Groq API Key:",             "groq_key"),
-            ("NVIDIA API Key:",           "nvidia_key"),
-        ]
         self._api_vars: Dict[str, tk.StringVar] = {}
-        for lbl, key in labels_keys:
+        self._model_vars: Dict[str, tk.StringVar] = {}
+
+        providers_cfg = [
+            ("Claude / OpenAI / Gemini:", "api_key",    "claude-sonnet-4-5 / gpt-4o / gemini-2.0-flash"),
+            ("Groq API Key:",             "groq_key",   "meta-llama/llama-4-scout-17b-16e-instruct"),
+            ("NVIDIA API Key:",           "nvidia_key", "microsoft/phi-3.5-vision-instruct"),
+        ]
+        for lbl, key, placeholder in providers_cfg:
+            # عنوان المزود
             tk.Label(p, text=lbl, bg=self.C["panel"], fg=self.C["muted"],
                      font=("Consolas",8)).pack(anchor="w", padx=10)
+            # مربع المفتاح
             v = tk.StringVar(value=self._config.get(key,""))
             self._api_vars[key] = v
             tk.Entry(p, textvariable=v, show="•",
                      bg=self.C["inp"], fg=self.C["accent"],
                      font=("Consolas",9), bd=0,
                      insertbackground=self.C["accent"]
-                     ).pack(fill="x", padx=10, ipady=4, pady=(0,4))
+                     ).pack(fill="x", padx=10, ipady=4, pady=(0,2))
+            # عنوان النموذج
+            tk.Label(p, text="النموذج (اتركه فارغاً للافتراضي):",
+                     bg=self.C["panel"], fg=self.C["muted"],
+                     font=("Consolas",7)).pack(anchor="w", padx=10)
+            # مربع النموذج
+            mv = tk.StringVar(value=self._config.get(f"model_{key}", ""))
+            self._model_vars[key] = mv
+            e = tk.Entry(p, textvariable=mv,
+                         bg=self.C["inp"], fg=self.C["text"],
+                         font=("Consolas",8), bd=0,
+                         insertbackground=self.C["accent"])
+            e.pack(fill="x", padx=10, ipady=3, pady=(0,8))
+            # placeholder hint
+            e.insert(0, placeholder)
+            e.configure(fg=self.C["muted"])
+            def _on_focus_in(event, entry=e, ph=placeholder, var=mv):
+                if entry.get() == ph:
+                    entry.delete(0, "end")
+                    entry.configure(fg=self.C["text"])
+            def _on_focus_out(event, entry=e, ph=placeholder, var=mv):
+                if not entry.get().strip():
+                    entry.insert(0, ph)
+                    entry.configure(fg=self.C["muted"])
+                    var.set("")
+            e.bind("<FocusIn>",  _on_focus_in)
+            e.bind("<FocusOut>", _on_focus_out)
 
         # التقنيات
         self._sec(p, "◈  التقنيات الـ 11")
@@ -1543,6 +1587,17 @@ class VisionBotGUI21:
         self._config.set("provider", self._prov_var.get())
         for key, var in self._api_vars.items():
             self._config.set(key, var.get().strip())
+        # حفظ النماذج المخصصة لكل مزود
+        placeholders = [
+            "claude-sonnet-4-5 / gpt-4o / gemini-2.0-flash",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "microsoft/phi-3.5-vision-instruct",
+        ]
+        for key, var in self._model_vars.items():
+            val = var.get().strip()
+            if val in placeholders:
+                val = ""
+            self._config.set(f"model_{key}", val)
         for key, var in self._t_vars.items():
             self._config.set(key, var.get())
         for key, var in self._svars.items():
